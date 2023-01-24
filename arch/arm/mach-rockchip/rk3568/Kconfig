@@ -12,6 +12,12 @@ config TARGET_QUARTZ64_RK3566
 	help
 	  The quartz64-rk3566 is a single board computer from pine64.
 
+config TARGET_PINETAB2_RK3566
+	bool "PINETAB2_RK3566"
+	select BOARD_LATE_INIT
+	help
+	  The pinetab2-rk3566 is a tablet from pine64.
+
 config SYS_SOC
 	default "rockchip"
 
@@ -19,6 +25,7 @@ config SYS_MALLOC_F_LEN
 	default 0x400
 
 source board/rockchip/evb_rk3568/Kconfig
+source board/pine64/pinetab2_rk3566/Kconfig
 source board/pine64/quartz64_rk3566/Kconfig
 
 endif

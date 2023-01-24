@@ -1,0 +1,15 @@
+if TARGET_PINETAB2_RK3566
+
+config SYS_BOARD
+	default "pinetab2_rk3566"
+
+config SYS_VENDOR
+	default "pine64"
+
+config SYS_CONFIG_NAME
+	default "pinetab2_rk3566"
+
+config BOARD_SPECIFIC_OPTIONS # dummy
+	def_bool y
+
+endif

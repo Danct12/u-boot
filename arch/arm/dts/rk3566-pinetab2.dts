@@ -1,0 +1,24 @@
+/*
+ * SPDX-License-Identifier:     GPL-2.0+
+ *
+ * (C) Copyright 2023 Rockchip Electronics Co., Ltd
+ */
+
+/dts-v1/;
+#include "rk3568.dtsi"
+#include "rk3566-u-boot.dtsi"
+#include <dt-bindings/input/input.h>
+
+/ {
+	model = "Pine64 PineTab 2";
+	compatible = "rockchip,rk3566-pinetab", "rockchip,rk3566";
+
+};
+
+&crypto {
+	status = "okay";
+};
+
+&uart2 {
+	status = "okay";
+};
