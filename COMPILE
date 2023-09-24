@@ -1,0 +1,1 @@
+make O=out CROSS_COMPILE=aarch64-linux-gnu- BL31=../rkbin/bin/rk33/rk3399_bl31_v1.36.elf ROCKCHIP_TPL=../rkbin/bin/rk33/rk3399_ddr_933MHz_v1.30.bin
