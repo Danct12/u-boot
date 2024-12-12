@@ -1,0 +1,486 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Copyright (c) 2015 Google, Inc
+ * Copyright 2014 Rockchip Inc.
+ */
+#define DEBUG
+
+#include <clk.h>
+#include <display.h>
+#include <dm.h>
+#include <dm/device_compat.h>
+#include <edid.h>
+#include <log.h>
+#include <mipi_dsi.h>
+#include <panel.h>
+#include <regmap.h>
+#include <reset.h>
+#include <syscon.h>
+#include <video.h>
+#include <video_bridge.h>
+#include <asm/global_data.h>
+#include <asm/gpio.h>
+#include <asm/io.h>
+#include <asm/arch-rockchip/clock.h>
+#include <asm/arch-rockchip/vop_rk3568.h>
+#include <dm/device-internal.h>
+#include <dm/uclass-internal.h>
+#include <efi.h>
+#include <efi_loader.h>
+#include <linux/bitops.h>
+#include <linux/err.h>
+#include <power/regulator.h>
+
+#include "rk_vop2.h"
+
+DECLARE_GLOBAL_DATA_PTR;
+
+enum vop_pol {
+	HSYNC_POSITIVE = 0,
+	VSYNC_POSITIVE = 1,
+	DEN_NEGATIVE   = 2,
+	DCLK_INVERT    = 3
+};
+
+static void rkvop_enable(struct udevice *dev, ulong fbbase,
+			 int fb_bits_per_pixel,
+			 const struct display_timing *edid)
+{
+	struct rk_vop2_priv *priv = dev_get_priv(dev);
+	struct rk3568_vop_sysctrl *sysctrl = priv->regs + VOP2_SYSREG_OFFSET;
+	struct rk3568_vop_esmart *esmart = priv->regs + VOP2_ESMART_OFFSET(0);
+	u32 lb_mode;
+	u32 rgb_mode;
+	u32 hactive = edid->hactive.typ;
+	u32 vactive = edid->vactive.typ;
+	int ret;
+
+	writel(V_ACT_WIDTH(hactive - 1) | V_ACT_HEIGHT(vactive - 1),
+	       &esmart->esmart_region0_act_info);
+
+	writel(V_DSP_XST(edid->hsync_len.typ + edid->hback_porch.typ) |
+	       V_DSP_YST(edid->vsync_len.typ + edid->vback_porch.typ),
+	       &esmart->esmart_region0_dsp_offset);
+
+	writel(V_DSP_WIDTH(hactive - 1) |
+		V_DSP_HEIGHT(vactive - 1),
+		&esmart->esmart_region0_dsp_info);
+
+	switch (fb_bits_per_pixel) {
+	case 16:
+		rgb_mode = RGB565;
+		writel(V_RGB565_VIRWIDTH(hactive), &esmart->esmart_region0_vir);
+		break;
+	case 24:
+		rgb_mode = RGB888;
+		writel(V_RGB888_VIRWIDTH(hactive), &esmart->esmart_region0_vir);
+		break;
+	case 32:
+	default:
+		rgb_mode = ARGB8888;
+		writel(V_ARGB888_VIRWIDTH(hactive), &esmart->esmart_region0_vir);
+		break;
+	}
+
+	writel(fbbase, &esmart->esmart_region0_mst_yrgb);
+
+	writel(0x01, &esmart->esmart_region0_mst_ctl);
+
+	clrsetbits_le32(&sysctrl->reg_cfg_done, M_GLOBAL_REGDONE,
+		V_GLOBAL_REGDONE(1)); /* enable reg config */
+}
+
+
+static void rkvop_set_pin_polarity(struct udevice *dev,
+                                   enum vop_modes mode, u32 polarity)
+{
+        struct rkvop_driverdata *ops =
+                (struct rkvop_driverdata *)dev_get_driver_data(dev);
+
+        if (ops->set_pin_polarity)
+                ops->set_pin_polarity(dev, mode, polarity);
+}
+
+static int rkvop_initialize(struct udevice *dev, struct rk_vop2_priv *priv)
+{
+	struct rk3568_vop_sysctrl *sysctrl = priv->regs + VOP2_SYSREG_OFFSET;
+	struct rk3568_vop_overlay *overlay = priv->regs + VOP2_OVERLAY_OFFSET;
+	int ret = 0;
+
+	/* TODO: Make this SoC specific */
+	clrsetbits_le32(&sysctrl->otp_win, M_OTP_WIN, V_OTP_WIN(1));
+	clrsetbits_le32(&overlay->overlay_ctrl, M_LAYER_SEL_REGDONE_EN, V_LAYER_SEL_REGDONE_EN(1));
+	clrsetbits_le32(&sysctrl->dsp_pol, (1 << 28), (1 & 1) << 28);
+	setbits_le32(&overlay->layer_sel, 0x2);
+	setbits_le32(&sysctrl->autogating_ctrl, 0);
+	return ret; 
+}
+
+static void rkvop_set_output(struct udevice *dev, enum vop_modes mode, u32 port)
+{
+	struct rkvop_driverdata *ops =
+		(struct rkvop_driverdata *)dev_get_driver_data(dev);
+
+	if (ops->set_output)
+		ops->set_output(dev, mode, port);
+}
+
+static void rkvop_enable_output(struct udevice *dev, enum vop_modes mode)
+{
+	struct rkvop_driverdata *ops =
+		(struct rkvop_driverdata *)dev_get_driver_data(dev);
+
+	if (ops->enable_output)
+		ops->enable_output(dev, mode);
+}
+
+static void rkvop_mode_set(struct udevice *dev,
+			   const struct display_timing *edid,
+			   enum vop_modes mode, int pp)
+{
+	struct rk_vop2_priv *priv = dev_get_priv(dev);
+	struct rk3568_vop_sysctrl *sysctrl = priv->regs + VOP2_SYSREG_OFFSET;
+	struct rk3568_vop_post *post = priv->regs + VOP2_POST_OFFSET(pp);
+	struct rkvop_driverdata *data =
+		(struct rkvop_driverdata *)dev_get_driver_data(dev);
+
+	u32 hactive = edid->hactive.typ;
+	u32 vactive = edid->vactive.typ;
+	u32 hsync_len = edid->hsync_len.typ;
+	u32 hback_porch = edid->hback_porch.typ;
+	u32 vsync_len = edid->vsync_len.typ;
+	u32 vback_porch = edid->vback_porch.typ;
+	u32 hfront_porch = edid->hfront_porch.typ;
+	u32 vfront_porch = edid->vfront_porch.typ;
+	int mode_flags;
+	u32 pin_polarity;
+
+	pin_polarity = BIT(DCLK_INVERT);
+	if (edid->flags & DISPLAY_FLAGS_HSYNC_HIGH)
+		pin_polarity |= BIT(HSYNC_POSITIVE);
+	if (edid->flags & DISPLAY_FLAGS_VSYNC_HIGH)
+		pin_polarity |= BIT(VSYNC_POSITIVE);
+
+	rkvop_set_pin_polarity(dev, mode, pin_polarity);
+	rkvop_set_output(dev, mode, pp);
+	rkvop_enable_output(dev, mode);
+
+	mode_flags = 0;  /* RGB888 */
+	if ((data->features & VOP_FEATURE_OUTPUT_10BIT) &&
+	    (mode == VOP_MODE_HDMI))
+		mode_flags = 15;  /* RGBaaa */
+
+	clrsetbits_le32(&post->dsp_ctrl, M_DSP_OUT_MODE,
+			V_DSP_OUT_MODE(mode_flags));
+
+	writel(V_HSYNC(hsync_len) |
+	       V_HORPRD(hsync_len + hback_porch + hactive + hfront_porch),
+			&post->dsp_htotal_hs_end);
+
+	writel(V_HEAP(hsync_len + hback_porch + hactive) |
+	       V_HASP(hsync_len + hback_porch),
+	       &post->dsp_hact_st_end);
+
+	writel(V_VSYNC(vsync_len) |
+	       V_VERPRD(vsync_len + vback_porch + vactive + vfront_porch),
+	       &post->dsp_vtotal_vs_end);
+
+	writel(V_VAEP(vsync_len + vback_porch + vactive)|
+	       V_VASP(vsync_len + vback_porch),
+	       &post->dsp_vact_st_end);
+
+	writel(V_HEAP(hsync_len + hback_porch + hactive) |
+	       V_HASP(hsync_len + hback_porch),
+	       &post->dsp_hact_info);
+
+	writel(V_VAEP(vsync_len + vback_porch + vactive)|
+	       V_VASP(vsync_len + vback_porch),
+	       &post->dsp_vact_info);
+
+
+	clrsetbits_le32(&post->dsp_ctrl, M_POST_STANDBY, V_POST_STANDBY(0));
+
+	/* COLOR BARS TEST */
+	clrsetbits_le32(&post->color_ctrl, M_POST_COLORBAR_EN,
+			V_POST_COLORBAR_EN(1));
+
+	clrsetbits_le32(&sysctrl->reg_cfg_done, M_GLOBAL_REGDONE | M_LOAD_GLOBAL0,
+		V_GLOBAL_REGDONE(1) | V_LOAD_GLOBAL0(1)); /* enable reg config */
+}
+
+
+ /**
+ * rk_display_init() - Try to enable the given display device
+ *
+ * This function performs many steps:
+ * - Finds the display device being referenced by @ep_node
+ * - Puts the VOP's ID into its uclass platform data
+ * - Probes the device to set it up
+ * - Reads the EDID timing information
+ * - Sets up the VOP clocks, etc. for the selected pixel clock and display mode
+ * - Enables the display (the display device handles this and will do different
+ *     things depending on the display type)
+ * - Tells the uclass about the display resolution so that the console will
+ *     appear correctly
+ *
+ * @dev:	VOP device that we want to connect to the display
+ * @fbbase:	Frame buffer address
+ * @ep_node:	Device tree node to process - this is the offset of an endpoint
+ *		node within the VOP's 'port' list.
+ * Return: 0 if OK, -ve if something went wrong
+ */
+static int rk_display_init(struct udevice *dev, ulong fbbase, ofnode vp_node)
+{
+	struct video_priv *uc_priv = dev_get_uclass_priv(dev);
+	ofnode ep_node;
+	int vop_id, remote_vop_id, port_id;
+	struct display_timing timing;
+	struct udevice *disp;
+	struct udevice *bridge;
+	int ret;
+	u32 remote_phandle;
+	struct display_plat *disp_uc_plat;
+	struct clk clk;
+	enum video_log2_bpp l2bpp;
+	ofnode remote;
+	const char *compat;
+	struct reset_ctl dclk_rst;
+	struct udevice *panel;
+
+	debug("%s(%s, 0x%lx, %s)\n", __func__,
+	      dev_read_name(dev), fbbase, ofnode_get_name(vp_node));
+
+	port_id = ofnode_read_u32_default(vp_node, "reg", -1);
+	if (port_id < 0) {
+		debug("%s(%s): no video port id\n", __func__, dev_read_name(dev));
+		return port_id;
+	}
+
+	ep_node = ofnode_first_subnode(vp_node);
+	if (!ofnode_valid(ep_node)) {
+		debug("%s(%s): no valid subnode\n", __func__, dev_read_name(dev));
+		return -EINVAL;
+	}
+
+	ret = ofnode_read_u32(ep_node, "remote-endpoint", &remote_phandle);
+	if (ret) {
+		debug("%s(%s): no remote-endpoint\n", __func__, dev_read_name(dev));
+		return ret;
+	}
+
+	remote = ofnode_get_by_phandle(remote_phandle);
+	if (!ofnode_valid(remote))
+		return -EINVAL;
+
+	remote = ofnode_get_parent(remote);
+	if (!ofnode_valid(remote))
+		return -EINVAL;
+
+	remote_vop_id = ofnode_read_u32_default(remote, "reg", -1);
+	debug("remote vop_id=%d\n", remote_vop_id);
+
+	/*
+	 * The remote-endpoint references into a subnode of the encoder
+	 * (i.e. HDMI, MIPI, etc.) with the DTS looking something like
+	 * the following (assume 'hdmi_in_vopl' to be referenced):
+	 *
+	 * hdmi: hdmi@ff940000 {
+	 *   ports {
+	 *     hdmi_in: port {
+	 *       hdmi_in_vopb: endpoint@0 { ... };
+	 *       hdmi_in_vopl: endpoint@1 { ... };
+	 *     }
+	 *   }
+	 * }
+	 *
+	 * The original code had 3 steps of "walking the parent", but
+	 * a much better (as in: less likely to break if the DTS
+	 * changes) way of doing this is to "find the enclosing device
+	 * of UCLASS_DISPLAY".
+	 */
+	while (ofnode_valid(remote)) {
+		remote = ofnode_get_parent(remote);
+		if (!ofnode_valid(remote)) {
+			debug("%s(%s): no UCLASS_DISPLAY for remote-endpoint\n",
+			      __func__, dev_read_name(dev));
+			return -EINVAL;
+		}
+
+		const char *yooocom;
+		yooocom = ofnode_get_property(remote, "compatible", NULL);
+		if (yooocom)
+			debug("%s(%s): compat: %s\n", __func__, dev_read_name(dev), yooocom);
+
+		uclass_find_device_by_ofnode(UCLASS_VIDEO_BRIDGE, remote, &bridge);
+
+		uclass_find_device_by_ofnode(UCLASS_DISPLAY, remote, &disp);
+		if (disp || bridge)
+			break;
+	};
+	compat = ofnode_get_property(remote, "compatible", NULL);
+	if (!compat) {
+		debug("%s(%s): Failed to find compatible property\n",
+		      __func__, dev_read_name(dev));
+		return -EINVAL;
+	}
+	if (strstr(compat, "mipi")) {
+		vop_id = VOP_MODE_MIPI;
+	} else if (strstr(compat, "hdmi")) {
+		vop_id = VOP_MODE_HDMI;
+	} else {
+		debug("%s(%s): Failed to find vop mode for %s\n",
+		      __func__, dev_read_name(dev), compat);
+		return -EINVAL;
+	}
+	debug("vop_id=%d\n", vop_id);
+	debug("port=%d\n", port_id);
+
+	if (bridge) {
+		/* video bridge detected, probe it */
+		ret = device_probe(bridge);
+		if (ret) {
+			printf("%s: device '%s' bridge won't probe (ret=%d)\n",
+			      __func__, dev->name, ret);
+			return ret;
+		}
+		
+		/* Attach the DSI controller and the display to the bridge. */
+		ret = video_bridge_attach(bridge);
+		if (ret) {
+			printf("Failed to attach video bridge: %d\n", ret);
+			return ret;
+		}
+
+		/* Get the panel device (TODO: fetch it from the bridge somehow) */
+		ret = uclass_first_device_err(UCLASS_PANEL, &panel);
+		if (ret) {
+			printf("Panel device error: %d\n", ret);
+			return ret;
+		}
+		
+		ret = panel_get_display_timing(panel, &timing);
+		if (ret) {
+			debug("%s: Failed to read timings\n", __func__);
+			return ret;
+		}
+
+	} else {
+		disp_uc_plat = dev_get_uclass_plat(disp);
+		debug("Found device '%s', disp_uc_priv=%p\n", disp->name, disp_uc_plat);
+		if (display_in_use(disp)) {
+			debug("   - device in use\n");
+			return -EBUSY;
+		}
+
+		disp_uc_plat->source_id = remote_vop_id;
+		disp_uc_plat->src_dev = dev;
+
+		ret = device_probe(disp);
+		if (ret) {
+			debug("%s: device '%s' display won't probe (ret=%d)\n",
+			      __func__, dev->name, ret);
+			return ret;
+		}
+
+		ret = display_read_timing(disp, &timing);
+		if (ret) {
+			debug("%s: Failed to read timings\n", __func__);
+			return ret;
+		}
+	}
+
+	/* Set bitwidth for vop display according to vop mode */
+	switch (vop_id) {
+	case VOP_MODE_HDMI:
+	case VOP_MODE_MIPI:
+		l2bpp = VIDEO_BPP32;
+		break;
+	default:
+		l2bpp = VIDEO_BPP16;
+	}
+
+	rkvop_mode_set(dev, &timing, vop_id, port_id);
+
+	rkvop_enable(dev, fbbase, 1 << l2bpp, &timing);
+
+	if (bridge) {
+		/* Attach the DSI controller and the display to the bridge. */
+		ret = video_bridge_set_backlight(bridge, 60);
+		if (ret) {
+			printf("Failed to start the video bridge: %d\n", ret);
+			return ret;
+		}
+	} else {
+		ret = display_enable(disp, 1 << l2bpp, &timing);
+		if (ret)
+			return ret;
+	}
+
+	uc_priv->xsize = timing.hactive.typ;
+	uc_priv->ysize = timing.vactive.typ;
+	uc_priv->bpix = l2bpp;
+	debug("fb=%lx, size=%d %d\n", fbbase, uc_priv->xsize, uc_priv->ysize);
+
+	return 0;
+}
+
+
+int rk_vop2_probe(struct udevice *dev)
+{
+	struct video_uc_plat *plat = dev_get_uclass_plat(dev);
+	struct rk_vop2_priv *priv = dev_get_priv(dev);
+	int ret = 0;
+	struct clk clk;
+	ofnode port, node;
+
+	/* Before relocation we don't need to do anything */
+	if (!(gd->flags & GD_FLG_RELOC))
+		return 0;
+
+#if defined(CONFIG_EFI_LOADER)
+	debug("Adding to EFI map %d @ %lx\n", plat->size, plat->base);
+	efi_add_memory_map(plat->base, plat->size, EFI_RESERVED_MEMORY_TYPE);
+#endif
+
+	priv->regs = dev_read_addr_ptr(dev);
+
+	ret = rkvop_initialize(dev, priv);
+	if (ret) {
+		debug("Failed to initialize VOP\n");
+		return -EINVAL;
+	}
+
+	/*
+	 * Try all the ports until we find one that works. In practice this
+	 * tries EDP first if available, then HDMI.
+	 */
+	port = dev_read_subnode(dev, "ports");
+	if (!ofnode_valid(port)) {
+		debug("%s(%s): 'port' subnode not found\n",
+		      __func__, dev_read_name(dev));
+		return -EINVAL;
+	}
+
+	for (node = ofnode_first_subnode(port);
+	     ofnode_valid(node);
+	     node = dev_read_next_subnode(node)) {
+		ret = rk_display_init(dev, plat->base, node);
+		if (ret)
+			debug("Device failed: ret=%d\n", ret);
+		if (!ret)
+			break;
+	}
+	video_set_flush_dcache(dev, 1);
+
+	return ret;
+}
+
+int rk_vop2_bind(struct udevice *dev)
+{
+	struct video_uc_plat *plat = dev_get_uclass_plat(dev);
+
+	plat->size = 4 * (CONFIG_VIDEO_ROCKCHIP_MAX_XRES *
+			  CONFIG_VIDEO_ROCKCHIP_MAX_YRES);
+
+	return 0;
+}
