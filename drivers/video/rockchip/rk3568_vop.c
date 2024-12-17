@@ -5,6 +5,8 @@
  * Copyright 2014 Rockchip Inc.
  */
 
+#define DEBUG
+
 #include <display.h>
 #include <dm.h>
 #include <log.h>
@@ -33,6 +35,7 @@ DECLARE_GLOBAL_DATA_PTR;
 #define V_HDMI_POL(x) (((x) & 0xf) << 4)
 #define V_LVDS_POL(x) (((x) & 0xf) << 0)
 
+#define M_MIPI1_OUT_EN (1 << 20)
 #define M_BT656_OUT_EN (1 << 7)
 #define M_BT1120_OUT_EN (1 << 6)
 #define M_LVDS_OUT_EN (1 << 5)
@@ -41,8 +44,10 @@ DECLARE_GLOBAL_DATA_PTR;
 #define M_HDMI_OUT_EN (1 << 1)
 #define M_RGB_OUT_EN (1 << 0)
 
-#define M_ALL_OUT_EN (M_BT656_OUT_EN | M_BT1120_OUT_EN | M_LVDS_OUT_EN | M_MIPI_OUT_EN | M_EDP_OUT_EN | M_HDMI_OUT_EN | M_RGB_OUT_EN)
+#define M_ALL_OUT_EN (M_MIPI1_OUT_EN | M_BT656_OUT_EN | M_BT1120_OUT_EN | M_LVDS_OUT_EN | \
+			M_MIPI_OUT_EN | M_EDP_OUT_EN | M_HDMI_OUT_EN | M_RGB_OUT_EN)
 
+#define V_MIPI1_OUT_EN(x) (((x) & 1) << 20)
 #define V_BT656_OUT_EN(x) (((x) & 1) << 7)
 #define V_BT1120_OUT_EN(x) (((x) & 1) << 6)
 #define V_LVDS_OUT_EN(x) (((x) & 1) << 5)
@@ -51,50 +56,29 @@ DECLARE_GLOBAL_DATA_PTR;
 #define V_HDMI_OUT_EN(x) (((x) & 1) << 1)
 #define V_RGB_OUT_EN(x) (((x) & 1) << 0)
 
-
-static void rk3568_set_output(struct udevice *dev,
-				    enum vop_modes mode, u32 port)
+static void rk3568_enable_output(struct udevice *dev,
+					enum vop_modes mode, u32 port)
 {
 	struct rk_vop2_priv *priv = dev_get_priv(dev);
 	struct rk3568_vop_sysctrl *sysctrl = priv->regs + VOP2_SYSREG_OFFSET;
+	u32 reg;
 
 	switch (mode) {
 	case VOP_MODE_HDMI:
-		clrsetbits_le32(&sysctrl->dsp_en,
-				M_HDMI_INFACE_MUX, V_HDMI_INFACE_MUX(port));
+		reg |= M_HDMI_OUT_EN | V_HDMI_INFACE_MUX(port);
 		break;
 
 	case VOP_MODE_MIPI:
-		clrsetbits_le32(&sysctrl->dsp_en,
-				M_MIPI_INFACE_MUX, V_MIPI_INFACE_MUX(port));
+		reg |= M_MIPI_OUT_EN | V_MIPI_INFACE_MUX(port);
 		break;
 
 	default:
 		debug("%s: unsupported output mode %x\n", __func__, mode);
 		return;
 	}
-}
 
-static void rk3568_enable_output(struct udevice *dev, enum vop_modes mode)
-{
-	struct rk_vop2_priv *priv = dev_get_priv(dev);
-	struct rk3568_vop_sysctrl *sysctrl = priv->regs + VOP2_SYSREG_OFFSET;
-
-	switch (mode) {
-	case VOP_MODE_HDMI:
-		clrsetbits_le32(&sysctrl->dsp_en,
-				M_ALL_OUT_EN, V_HDMI_OUT_EN(1));
-		break;
-
-	case VOP_MODE_MIPI:
-		clrsetbits_le32(&sysctrl->dsp_en,
-				M_ALL_OUT_EN, V_MIPI_OUT_EN(1));
-		break;
-
-	default:
-		debug("%s: unsupported output mode %x\n", __func__, mode);
-		return;
-	}
+	debug("%s: vop output %x\n", __func__, reg);
+	writel(reg, &sysctrl->dsp_en);
 }
 
 static void rk3568_set_pin_polarity(struct udevice *dev,
@@ -102,22 +86,26 @@ static void rk3568_set_pin_polarity(struct udevice *dev,
 {
 	struct rk_vop2_priv *priv = dev_get_priv(dev);
 	struct rk3568_vop_sysctrl *sysctrl = priv->regs + VOP2_SYSREG_OFFSET;
+	u32 reg;
+
+	reg = M_DSP_INFACE_REGDONE;
 
 	switch (mode) {
 	case VOP_MODE_HDMI:
-		clrsetbits_le32(&sysctrl->dsp_pol,
-				M_HDMI_POL, V_HDMI_POL(polarity));
+		reg |= V_HDMI_POL(polarity);
 		break;
 
 	case VOP_MODE_MIPI:
-		clrsetbits_le32(&sysctrl->dsp_pol,
-				M_MIPI_POL, V_MIPI_POL(polarity));
+		reg |= V_MIPI_POL(polarity);
 		break;
 
 	default:
 		debug("%s: unsupported output mode %x\n", __func__, mode);
 		return;
 	}
+
+	debug("%s: vop polarity %x\n", __func__, reg);
+	writel(reg, &sysctrl->dsp_pol); 
 }
 
 static int rk3568_vop_probe(struct udevice *dev)
@@ -132,7 +120,6 @@ static int rk3568_vop_probe(struct udevice *dev)
 struct rkvop_driverdata rk3568_driverdata = {
 	.set_pin_polarity = rk3568_set_pin_polarity,
 	.enable_output = rk3568_enable_output,
-	.set_output = rk3568_set_output,
 };
 
 static const struct udevice_id rk3568_vop_ids[] = {

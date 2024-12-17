@@ -49,11 +49,9 @@ static void rkvop_enable(struct udevice *dev, ulong fbbase,
 	struct rk_vop2_priv *priv = dev_get_priv(dev);
 	struct rk3568_vop_sysctrl *sysctrl = priv->regs + VOP2_SYSREG_OFFSET;
 	struct rk3568_vop_esmart *esmart = priv->regs + VOP2_ESMART_OFFSET(0);
-	u32 lb_mode;
 	u32 rgb_mode;
 	u32 hactive = edid->hactive.typ;
 	u32 vactive = edid->vactive.typ;
-	int ret;
 
 	writel(V_ACT_WIDTH(hactive - 1) | V_ACT_HEIGHT(vactive - 1),
 	       &esmart->esmart_region0_act_info);
@@ -83,13 +81,7 @@ static void rkvop_enable(struct udevice *dev, ulong fbbase,
 	}
 
 	writel(fbbase, &esmart->esmart_region0_mst_yrgb);
-
-	writel(0x01, &esmart->esmart_region0_mst_ctl);
-
-	clrsetbits_le32(&sysctrl->reg_cfg_done, M_GLOBAL_REGDONE,
-		V_GLOBAL_REGDONE(1)); /* enable reg config */
 }
-
 
 static void rkvop_set_pin_polarity(struct udevice *dev,
                                    enum vop_modes mode, u32 polarity)
@@ -105,44 +97,65 @@ static int rkvop_initialize(struct udevice *dev, struct rk_vop2_priv *priv)
 {
 	struct rk3568_vop_sysctrl *sysctrl = priv->regs + VOP2_SYSREG_OFFSET;
 	struct rk3568_vop_overlay *overlay = priv->regs + VOP2_OVERLAY_OFFSET;
+	struct clk hclk, aclk;
 	int ret = 0;
 
-	/* TODO: Make this SoC specific */
+	debug("(%s: %s): version info: 0x%x\n", __func__,
+	      dev_read_name(dev), readl(&sysctrl->version_info));
+
+	ret = clk_get_by_name(dev, "hclk", &hclk);
+	if (ret < 0)
+		return ret;
+
+	ret = clk_get_by_name(dev, "aclk", &aclk);
+	if (ret < 0)
+		return ret;
+
+	ret = clk_enable(&hclk);
+	if (ret < 0) {
+		printf("Failed to enable hclk\n");
+		return ret;
+	}
+
+	ret = clk_enable(&aclk);
+	if (ret < 0) {
+		printf("Failed to enable aclk\n");
+		return ret;
+	}
+
+	/* Enable OTP function */
 	clrsetbits_le32(&sysctrl->otp_win, M_OTP_WIN, V_OTP_WIN(1));
-	clrsetbits_le32(&overlay->overlay_ctrl, M_LAYER_SEL_REGDONE_EN, V_LAYER_SEL_REGDONE_EN(1));
-	clrsetbits_le32(&sysctrl->dsp_pol, (1 << 28), (1 & 1) << 28);
-	setbits_le32(&overlay->layer_sel, 0x2);
-	setbits_le32(&sysctrl->autogating_ctrl, 0);
-	return ret; 
+
+	clrsetbits_le32(&sysctrl->reg_cfg_done, M_GLOBAL_REGDONE, V_GLOBAL_REGDONE(1));
+
+	/*
+	 * Disable auto gating, this is a workaround to
+	 * avoid display image shift when a window enabled.
+	 */
+	clrsetbits_le32(&sysctrl->autogating_ctrl, M_AUTO_GATING, V_AUTO_GATING(0));
+	return 0; 
 }
 
-static void rkvop_set_output(struct udevice *dev, enum vop_modes mode, u32 port)
-{
-	struct rkvop_driverdata *ops =
-		(struct rkvop_driverdata *)dev_get_driver_data(dev);
-
-	if (ops->set_output)
-		ops->set_output(dev, mode, port);
-}
-
-static void rkvop_enable_output(struct udevice *dev, enum vop_modes mode)
+static void rkvop_enable_output(struct udevice *dev, enum vop_modes mode, u32 port)
 {
 	struct rkvop_driverdata *ops =
 		(struct rkvop_driverdata *)dev_get_driver_data(dev);
 
 	if (ops->enable_output)
-		ops->enable_output(dev, mode);
+		ops->enable_output(dev, mode, port);
 }
 
 static void rkvop_mode_set(struct udevice *dev,
 			   const struct display_timing *edid,
-			   enum vop_modes mode, int pp)
+			   enum vop_modes mode, int port)
 {
 	struct rk_vop2_priv *priv = dev_get_priv(dev);
 	struct rk3568_vop_sysctrl *sysctrl = priv->regs + VOP2_SYSREG_OFFSET;
-	struct rk3568_vop_post *post = priv->regs + VOP2_POST_OFFSET(pp);
+	struct rk3568_vop_post *post = priv->regs + VOP2_POST_OFFSET(port);
 	struct rkvop_driverdata *data =
 		(struct rkvop_driverdata *)dev_get_driver_data(dev);
+
+	debug("POST ADDR: %p\n", post);
 
 	u32 hactive = edid->hactive.typ;
 	u32 vactive = edid->vactive.typ;
@@ -161,17 +174,14 @@ static void rkvop_mode_set(struct udevice *dev,
 	if (edid->flags & DISPLAY_FLAGS_VSYNC_HIGH)
 		pin_polarity |= BIT(VSYNC_POSITIVE);
 
+	rkvop_enable_output(dev, mode, port);
 	rkvop_set_pin_polarity(dev, mode, pin_polarity);
-	rkvop_set_output(dev, mode, pp);
-	rkvop_enable_output(dev, mode);
 
 	mode_flags = 0;  /* RGB888 */
+#if 0
 	if ((data->features & VOP_FEATURE_OUTPUT_10BIT) &&
 	    (mode == VOP_MODE_HDMI))
 		mode_flags = 15;  /* RGBaaa */
-
-	clrsetbits_le32(&post->dsp_ctrl, M_DSP_OUT_MODE,
-			V_DSP_OUT_MODE(mode_flags));
 
 	writel(V_HSYNC(hsync_len) |
 	       V_HORPRD(hsync_len + hback_porch + hactive + hfront_porch),
@@ -181,13 +191,13 @@ static void rkvop_mode_set(struct udevice *dev,
 	       V_HASP(hsync_len + hback_porch),
 	       &post->dsp_hact_st_end);
 
-	writel(V_VSYNC(vsync_len) |
-	       V_VERPRD(vsync_len + vback_porch + vactive + vfront_porch),
-	       &post->dsp_vtotal_vs_end);
-
 	writel(V_VAEP(vsync_len + vback_porch + vactive)|
 	       V_VASP(vsync_len + vback_porch),
 	       &post->dsp_vact_st_end);
+
+	writel(V_VSYNC(vsync_len) |
+	       V_VERPRD(vsync_len + vback_porch + vactive + vfront_porch),
+	       &post->dsp_vtotal_vs_end);
 
 	writel(V_HEAP(hsync_len + hback_porch + hactive) |
 	       V_HASP(hsync_len + hback_porch),
@@ -196,16 +206,27 @@ static void rkvop_mode_set(struct udevice *dev,
 	writel(V_VAEP(vsync_len + vback_porch + vactive)|
 	       V_VASP(vsync_len + vback_porch),
 	       &post->dsp_vact_info);
+#endif
 
+	writel(0x01b70014, &post->prescan_htimings);
+	writel(0x00640384, &post->dsp_hact_info);
+	writel(0x00100510, &post->dsp_vact_info);
+	writel(0x03d40014, &post->dsp_htotal_hs_end);
+	writel(0x00640384, &post->dsp_hact_st_end);
+	writel(0x05240004, &post->dsp_vtotal_vs_end);
+	writel(0x00100510, &post->dsp_vact_st_end);
 
-	clrsetbits_le32(&post->dsp_ctrl, M_POST_STANDBY, V_POST_STANDBY(0));
+	writel(0x10001000, &post->scl_factor_yrgb);
 
 	/* COLOR BARS TEST */
 	clrsetbits_le32(&post->color_ctrl, M_POST_COLORBAR_EN,
 			V_POST_COLORBAR_EN(1));
 
-	clrsetbits_le32(&sysctrl->reg_cfg_done, M_GLOBAL_REGDONE | M_LOAD_GLOBAL0,
-		V_GLOBAL_REGDONE(1) | V_LOAD_GLOBAL0(1)); /* enable reg config */
+	writel(0x00010000, &post->dsp_ctrl);
+
+	writel(M_GLOBAL_REGDONE | M_LOAD_GLOBAL1, &sysctrl->reg_cfg_done);
+
+	clrsetbits_le32(&post->dsp_ctrl, M_POST_STANDBY, V_POST_STANDBY(0));
 }
 
 
@@ -225,27 +246,26 @@ static void rkvop_mode_set(struct udevice *dev,
  *
  * @dev:	VOP device that we want to connect to the display
  * @fbbase:	Frame buffer address
- * @ep_node:	Device tree node to process - this is the offset of an endpoint
- *		node within the VOP's 'port' list.
+ * @vp_node:	Device tree node to process
  * Return: 0 if OK, -ve if something went wrong
  */
 static int rk_display_init(struct udevice *dev, ulong fbbase, ofnode vp_node)
 {
 	struct video_priv *uc_priv = dev_get_uclass_priv(dev);
 	ofnode ep_node;
-	int vop_id, remote_vop_id, port_id;
+	int vop_id, port_id;
 	struct display_timing timing;
 	struct udevice *disp;
 	struct udevice *bridge;
 	int ret;
 	u32 remote_phandle;
 	struct display_plat *disp_uc_plat;
-	struct clk clk;
 	enum video_log2_bpp l2bpp;
 	ofnode remote;
 	const char *compat;
-	struct reset_ctl dclk_rst;
 	struct udevice *panel;
+	char dclk_name[9];
+	struct clk dclk;
 
 	debug("%s(%s, 0x%lx, %s)\n", __func__,
 	      dev_read_name(dev), fbbase, ofnode_get_name(vp_node));
@@ -276,8 +296,21 @@ static int rk_display_init(struct udevice *dev, ulong fbbase, ofnode vp_node)
 	if (!ofnode_valid(remote))
 		return -EINVAL;
 
-	remote_vop_id = ofnode_read_u32_default(remote, "reg", -1);
-	debug("remote vop_id=%d\n", remote_vop_id);
+	/* enable port clk */
+	snprintf(dclk_name, sizeof(dclk_name), "dclk_vp%d", port_id);
+	ret = clk_get_by_name(dev, dclk_name, &dclk);
+	if (ret < 0)
+		return ret;
+
+	ret = clk_set_rate(&dclk, 73500000);
+	if (ret < 0)
+		return ret;
+
+	ret = clk_enable(&dclk);
+	if (ret < 0) {
+		printf("Failed to enable %s\n", dclk_name);
+		return ret;
+	}
 
 	/*
 	 * The remote-endpoint references into a subnode of the encoder
@@ -372,7 +405,7 @@ static int rk_display_init(struct udevice *dev, ulong fbbase, ofnode vp_node)
 			return -EBUSY;
 		}
 
-		disp_uc_plat->source_id = remote_vop_id;
+		disp_uc_plat->source_id = vop_id;
 		disp_uc_plat->src_dev = dev;
 
 		ret = device_probe(disp);
@@ -399,9 +432,9 @@ static int rk_display_init(struct udevice *dev, ulong fbbase, ofnode vp_node)
 		l2bpp = VIDEO_BPP16;
 	}
 
-	rkvop_mode_set(dev, &timing, vop_id, port_id);
-
 	rkvop_enable(dev, fbbase, 1 << l2bpp, &timing);
+
+	rkvop_mode_set(dev, &timing, vop_id, port_id);
 
 	if (bridge) {
 		/* Attach the DSI controller and the display to the bridge. */
@@ -430,7 +463,6 @@ int rk_vop2_probe(struct udevice *dev)
 	struct video_uc_plat *plat = dev_get_uclass_plat(dev);
 	struct rk_vop2_priv *priv = dev_get_priv(dev);
 	int ret = 0;
-	struct clk clk;
 	ofnode port, node;
 
 	/* Before relocation we don't need to do anything */

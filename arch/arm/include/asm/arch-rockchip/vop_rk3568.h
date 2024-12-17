@@ -139,11 +139,13 @@ enum vop_modes {
 #define M_GLOBAL_REGDONE (1 << 15)
 #define M_LOAD_ESMART1 (1 << 11)
 #define M_LOAD_ESMART0 (1 << 10)
+#define M_LOAD_GLOBAL1 (1 << 1)
 #define M_LOAD_GLOBAL0 (1 << 0)
 
 #define V_GLOBAL_REGDONE(x) (((x) & 1) << 15)
 #define V_LOAD_ESMART1(x) (((x) & 1) << 11)
 #define V_LOAD_ESMART0(x) (((x) & 1) << 10)
+#define V_LOAD_GLOBAL1(x) (((x) & 1) << 1)
 #define V_LOAD_GLOBAL0(x) (((x) & 1) << 0)
 
 /* VOP_VERSION_INFO */
