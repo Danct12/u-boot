@@ -26,9 +26,9 @@ static const struct display_timing default_timing = {
 	.hback_porch.typ 	= 64,
 	.hsync_len.typ 		= 16,
 	.vactive.typ 		= 1280,
-	.vfront_porch.typ 	= 4,
-	.vback_porch.typ 	= 2,
-	.vsync_len.typ 		= 12,
+	.vfront_porch.typ 	= 2,
+	.vback_porch.typ 	= 12,
+	.vsync_len.typ 		= 4,
 };
 
 #define dsi_dcs_write_seq(device, seq...) do {					\
