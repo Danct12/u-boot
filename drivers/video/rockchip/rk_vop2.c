@@ -42,16 +42,33 @@ enum vop_pol {
 	DCLK_INVERT    = 3
 };
 
+static void rkvop_cfg_regdone(struct rk3568_vop_sysctrl *sysctrl, int port)
+{
+	u32 reg;
+	reg = M_GLOBAL_REGDONE;
+
+	/*
+	 * For RK3588, changes will only take effect when you shift the same
+	 * bit by 16.
+	 */
+	reg |= (1 << port) | (1 << port) << 16;
+
+	writel(reg, &sysctrl->reg_cfg_done);
+}
+
 static void rkvop_enable(struct udevice *dev, ulong fbbase,
 			 int fb_bits_per_pixel,
-			 const struct display_timing *edid)
+			 const struct display_timing *edid, int port)
 {
 	struct rk_vop2_priv *priv = dev_get_priv(dev);
 	struct rk3568_vop_sysctrl *sysctrl = priv->regs + VOP2_SYSREG_OFFSET;
+	struct rk3568_vop_overlay *overlay = priv->regs + VOP2_OVERLAY_OFFSET;
 	struct rk3568_vop_esmart *esmart = priv->regs + VOP2_ESMART_OFFSET(0);
 	u32 rgb_mode;
 	u32 hactive = edid->hactive.typ;
 	u32 vactive = edid->vactive.typ;
+
+	debug("(%s, %s): esmart addr: 0x%p\n", dev_read_name(dev), __func__, esmart);
 
 	writel(V_ACT_WIDTH(hactive - 1) | V_ACT_HEIGHT(vactive - 1),
 	       &esmart->esmart_region0_act_info);
@@ -81,6 +98,16 @@ static void rkvop_enable(struct udevice *dev, ulong fbbase,
 	}
 
 	writel(fbbase, &esmart->esmart_region0_mst_yrgb);
+
+	writel((1 << 0) | (1 << 1), &esmart->esmart_region0_mst_yrgb);
+
+	/* TODO: PLEASE DO SOMETHING HERE */
+	/* Set layer 0 to esmart0 */
+	writel(2, &overlay->layer_sel);
+
+	writel((1 << 24) | (0 << 0) | (1 << 4) | (7 << 8), &overlay->port_sel);
+
+	writel((1 << 30) | (1 << 28), &overlay->overlay_ctrl);
 }
 
 static void rkvop_set_pin_polarity(struct udevice *dev,
@@ -96,7 +123,6 @@ static void rkvop_set_pin_polarity(struct udevice *dev,
 static int rkvop_initialize(struct udevice *dev, struct rk_vop2_priv *priv)
 {
 	struct rk3568_vop_sysctrl *sysctrl = priv->regs + VOP2_SYSREG_OFFSET;
-	struct rk3568_vop_overlay *overlay = priv->regs + VOP2_OVERLAY_OFFSET;
 	struct clk hclk, aclk;
 	int ret = 0;
 
@@ -126,12 +152,8 @@ static int rkvop_initialize(struct udevice *dev, struct rk_vop2_priv *priv)
 	/* Enable OTP function */
 	clrsetbits_le32(&sysctrl->otp_win, M_OTP_WIN, V_OTP_WIN(1));
 
-	clrsetbits_le32(&sysctrl->reg_cfg_done, M_GLOBAL_REGDONE, V_GLOBAL_REGDONE(1));
+	writel(M_GLOBAL_REGDONE, &sysctrl->reg_cfg_done);
 
-	/*
-	 * Disable auto gating, this is a workaround to
-	 * avoid display image shift when a window enabled.
-	 */
 	clrsetbits_le32(&sysctrl->autogating_ctrl, M_AUTO_GATING, V_AUTO_GATING(0));
 	return 0; 
 }
@@ -155,7 +177,7 @@ static void rkvop_mode_set(struct udevice *dev,
 	struct rkvop_driverdata *data =
 		(struct rkvop_driverdata *)dev_get_driver_data(dev);
 
-	debug("POST ADDR: %p\n", post);
+	debug("(%s, %s): port addr: 0x%p\n", dev_read_name(dev), __func__, post);
 
 	u32 hactive = edid->hactive.typ;
 	u32 vactive = edid->vactive.typ;
@@ -178,10 +200,12 @@ static void rkvop_mode_set(struct udevice *dev,
 	rkvop_set_pin_polarity(dev, mode, pin_polarity);
 
 	mode_flags = 0;  /* RGB888 */
-#if 0
 	if ((data->features & VOP_FEATURE_OUTPUT_10BIT) &&
 	    (mode == VOP_MODE_HDMI))
 		mode_flags = 15;  /* RGBaaa */
+
+	/* TODO: What is prescan timings? */
+	//writel(((40 + (hactive >> 1) - 1) << 16) | hsync_len, &post->prescan_htimings);
 
 	writel(V_HSYNC(hsync_len) |
 	       V_HORPRD(hsync_len + hback_porch + hactive + hfront_porch),
@@ -206,25 +230,17 @@ static void rkvop_mode_set(struct udevice *dev,
 	writel(V_VAEP(vsync_len + vback_porch + vactive)|
 	       V_VASP(vsync_len + vback_porch),
 	       &post->dsp_vact_info);
-#endif
 
-	writel(0x01b70014, &post->prescan_htimings);
-	writel(0x00640384, &post->dsp_hact_info);
-	writel(0x00100510, &post->dsp_vact_info);
-	writel(0x03d40014, &post->dsp_htotal_hs_end);
-	writel(0x00640384, &post->dsp_hact_st_end);
-	writel(0x05240004, &post->dsp_vtotal_vs_end);
-	writel(0x00100510, &post->dsp_vact_st_end);
-
+	/* We don't need to scale. */
 	writel(0x10001000, &post->scl_factor_yrgb);
 
 	/* COLOR BARS TEST */
 	clrsetbits_le32(&post->color_ctrl, M_POST_COLORBAR_EN,
 			V_POST_COLORBAR_EN(1));
 
-	writel(0x00010000, &post->dsp_ctrl);
+	writel(mode_flags, &post->dsp_ctrl);
 
-	writel(M_GLOBAL_REGDONE | M_LOAD_GLOBAL1, &sysctrl->reg_cfg_done);
+	rkvop_cfg_regdone(sysctrl, port);
 
 	clrsetbits_le32(&post->dsp_ctrl, M_POST_STANDBY, V_POST_STANDBY(0));
 }
@@ -302,6 +318,12 @@ static int rk_display_init(struct udevice *dev, ulong fbbase, ofnode vp_node)
 	if (ret < 0)
 		return ret;
 
+	/*
+	 * HACK: VOP2 doesn't seem to like it when we probe the bridge controller
+	 * and set clk..
+	 *
+	 * For now, this will be the display of the PineTab2.
+	 */
 	ret = clk_set_rate(&dclk, 73500000);
 	if (ret < 0)
 		return ret;
@@ -432,9 +454,9 @@ static int rk_display_init(struct udevice *dev, ulong fbbase, ofnode vp_node)
 		l2bpp = VIDEO_BPP16;
 	}
 
-	rkvop_enable(dev, fbbase, 1 << l2bpp, &timing);
-
 	rkvop_mode_set(dev, &timing, vop_id, port_id);
+
+	rkvop_enable(dev, fbbase, 1 << l2bpp, &timing, port_id);
 
 	if (bridge) {
 		/* Attach the DSI controller and the display to the bridge. */
