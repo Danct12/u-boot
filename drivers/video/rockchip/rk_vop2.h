@@ -8,6 +8,9 @@
 
 #include <asm/arch-rockchip/vop_rk3568.h>
 
+/* RK3588 have 4 video ports (0/1/2/3) */
+#define VOP2_VP_MAX 3
+
 struct rk_vop2_priv {
 	void *grf;
 	void *regs;
@@ -17,9 +20,15 @@ enum vop_features {
 	VOP_FEATURE_OUTPUT_10BIT = (1 << 0),
 };
 
+struct rkvop_platdata {
+	const u8 delay;
+	const u8 bg_dly[VOP2_VP_MAX];
+};
+
 struct rkvop_driverdata {
 	/* configuration */
 	u32 features;
+	void (*platdata);
 	/* block-specific setters/getters */
 	void (*enable_output)(struct udevice *, enum vop_modes, u32);
 	void (*set_pin_polarity)(struct udevice *, enum vop_modes, u32);

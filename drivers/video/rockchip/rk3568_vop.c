@@ -77,7 +77,7 @@ static void rk3568_enable_output(struct udevice *dev,
 		return;
 	}
 
-	debug("%s: vop output %x\n", __func__, reg);
+	debug("%s: vop output 0x%08x\n", __func__, reg);
 	writel(reg, &sysctrl->dsp_en);
 }
 
@@ -104,7 +104,7 @@ static void rk3568_set_pin_polarity(struct udevice *dev,
 		return;
 	}
 
-	debug("%s: vop polarity %x\n", __func__, reg);
+	debug("%s: vop polarity 0x%08x\n", __func__, reg);
 	writel(reg, &sysctrl->dsp_pol); 
 }
 
@@ -117,9 +117,16 @@ static int rk3568_vop_probe(struct udevice *dev)
 	return rk_vop2_probe(dev);
 }
 
+struct rkvop_platdata rk3568_platdata = {
+	.delay = 20,
+	.bg_dly = {42, 40, 40},
+};
+
 struct rkvop_driverdata rk3568_driverdata = {
+	.features = VOP_FEATURE_OUTPUT_10BIT,
 	.set_pin_polarity = rk3568_set_pin_polarity,
 	.enable_output = rk3568_enable_output,
+	.platdata = &rk3568_platdata,
 };
 
 static const struct udevice_id rk3568_vop_ids[] = {

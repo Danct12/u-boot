@@ -48,8 +48,8 @@ static void rkvop_cfg_regdone(struct rk3568_vop_sysctrl *sysctrl, int port)
 	reg = M_GLOBAL_REGDONE;
 
 	/*
-	 * For RK3588, changes will only take effect when you shift the same
-	 * bit by 16.
+	 * For RK3588, changes will only take effect when you leftshift
+	 * the same bit by 16.
 	 */
 	reg |= (1 << port) | (1 << port) << 16;
 
@@ -58,24 +58,33 @@ static void rkvop_cfg_regdone(struct rk3568_vop_sysctrl *sysctrl, int port)
 
 static void rkvop_enable(struct udevice *dev, ulong fbbase,
 			 int fb_bits_per_pixel,
-			 const struct display_timing *edid, int port)
+			 const struct display_timing *edid, int port,
+			 struct rkvop_platdata *platdata)
 {
 	struct rk_vop2_priv *priv = dev_get_priv(dev);
 	struct rk3568_vop_sysctrl *sysctrl = priv->regs + VOP2_SYSREG_OFFSET;
 	struct rk3568_vop_overlay *overlay = priv->regs + VOP2_OVERLAY_OFFSET;
 	struct rk3568_vop_esmart *esmart = priv->regs + VOP2_ESMART_OFFSET(0);
+	u32 reg;
 	u32 rgb_mode;
 	u32 hactive = edid->hactive.typ;
 	u32 vactive = edid->vactive.typ;
 
 	debug("(%s, %s): esmart addr: 0x%p\n", dev_read_name(dev), __func__, esmart);
 
+	writel(0x4, &esmart->esmart_ctrl0);
+
 	writel(V_ACT_WIDTH(hactive - 1) | V_ACT_HEIGHT(vactive - 1),
 	       &esmart->esmart_region0_act_info);
 
+#if 0
 	writel(V_DSP_XST(edid->hsync_len.typ + edid->hback_porch.typ) |
 	       V_DSP_YST(edid->vsync_len.typ + edid->vback_porch.typ),
 	       &esmart->esmart_region0_dsp_offset);
+#else
+	/* TODO: Not actually needed? */
+	writel(0, &esmart->esmart_region0_dsp_offset);
+#endif
 
 	writel(V_DSP_WIDTH(hactive - 1) |
 		V_DSP_HEIGHT(vactive - 1),
@@ -99,15 +108,42 @@ static void rkvop_enable(struct udevice *dev, ulong fbbase,
 
 	writel(fbbase, &esmart->esmart_region0_mst_yrgb);
 
-	writel((1 << 0) | (1 << 1), &esmart->esmart_region0_mst_yrgb);
+	writel(V_ESMART_REGION0_DATA_FMT(rgb_mode) | M_ESMART_REGION0_MST_EN,
+		&esmart->esmart_region0_mst_ctl);
 
-	/* TODO: PLEASE DO SOMETHING HERE */
-	/* Set layer 0 to esmart0 */
-	writel(2, &overlay->layer_sel);
+#if 1
+	reg = readl(&overlay->overlay_ctrl) | M_LAYER_SEL_REGDONE_EN;
+	writel(reg, &overlay->overlay_ctrl);
 
-	writel((1 << 24) | (0 << 0) | (1 << 4) | (7 << 8), &overlay->port_sel);
+	/* TODO: RK3568-specific layers, we can move this to it's own platdata */
+	writel(0x54552210, &overlay->layer_sel);
 
-	writel((1 << 30) | (1 << 28), &overlay->overlay_ctrl);
+	/* TODO: Investigate how port_sel works. I still know nothing. */
+	writel(0x85000852, &overlay->port_sel);
+
+/*	reg = readl(&overlay->port_sel);
+	reg |= V_ESMART0_SEL_PORT(port) | (0x2 << 0) | (0x5 << 4) | (0x8 << 8);
+	writel(reg, &overlay->port_sel);
+*/
+
+#if 0
+	writel(0x26000000, &overlay->overlay_ctrl + 0xE0);
+	writel(0x28000000, &overlay->overlay_ctrl + 0xE4);
+	writel(0x28000000, &overlay->overlay_ctrl + 0xE8);
+	writel(0x14140014, &overlay->overlay_ctrl + 0xF8);
+#endif
+
+#else
+	writel(0x10000000, &overlay->overlay_ctrl);
+	writel(0x54552210, &overlay->layer_sel);
+	writel(0x85000852, &overlay->port_sel);
+
+
+	writel(0x26000000, &overlay->overlay_ctrl + 0xE0);
+	writel(0x28000000, &overlay->overlay_ctrl + 0xE4);
+	writel(0x28000000, &overlay->overlay_ctrl + 0xE8);
+	writel(0x14140014, &overlay->overlay_ctrl + 0xF8);
+#endif
 }
 
 static void rkvop_set_pin_polarity(struct udevice *dev,
@@ -137,17 +173,21 @@ static int rkvop_initialize(struct udevice *dev, struct rk_vop2_priv *priv)
 	if (ret < 0)
 		return ret;
 
+/*
 	ret = clk_enable(&hclk);
 	if (ret < 0) {
 		printf("Failed to enable hclk\n");
 		return ret;
 	}
+*/
 
 	ret = clk_enable(&aclk);
 	if (ret < 0) {
 		printf("Failed to enable aclk\n");
 		return ret;
 	}
+
+	debug("aclk rate: %ld - hclk rate: %ld\n", clk_get_rate(&aclk), clk_get_rate(&hclk));
 
 	/* Enable OTP function */
 	clrsetbits_le32(&sysctrl->otp_win, M_OTP_WIN, V_OTP_WIN(1));
@@ -169,7 +209,8 @@ static void rkvop_enable_output(struct udevice *dev, enum vop_modes mode, u32 po
 
 static void rkvop_mode_set(struct udevice *dev,
 			   const struct display_timing *edid,
-			   enum vop_modes mode, int port)
+			   enum vop_modes mode, int port,
+			   struct rkvop_platdata *platdata)
 {
 	struct rk_vop2_priv *priv = dev_get_priv(dev);
 	struct rk3568_vop_sysctrl *sysctrl = priv->regs + VOP2_SYSREG_OFFSET;
@@ -204,8 +245,10 @@ static void rkvop_mode_set(struct udevice *dev,
 	    (mode == VOP_MODE_HDMI))
 		mode_flags = 15;  /* RGBaaa */
 
+	printf("bg_dly: %d\n", platdata->bg_dly[port]);
+
 	/* TODO: What is prescan timings? */
-	//writel(((40 + (hactive >> 1) - 1) << 16) | hsync_len, &post->prescan_htimings);
+	writel(((platdata->bg_dly[port] + (hactive >> 1) - 1) << 16) | hsync_len, &post->prescan_htimings);
 
 	writel(V_HSYNC(hsync_len) |
 	       V_HORPRD(hsync_len + hback_porch + hactive + hfront_porch),
@@ -235,16 +278,15 @@ static void rkvop_mode_set(struct udevice *dev,
 	writel(0x10001000, &post->scl_factor_yrgb);
 
 	/* COLOR BARS TEST */
-	clrsetbits_le32(&post->color_ctrl, M_POST_COLORBAR_EN,
-			V_POST_COLORBAR_EN(1));
+	//clrsetbits_le32(&post->color_ctrl, M_POST_COLORBAR_EN,
+	//		V_POST_COLORBAR_EN(1));
 
-	writel(mode_flags, &post->dsp_ctrl);
+	writel(V_DSP_OUT_MODE(mode_flags), &post->dsp_ctrl);
 
 	rkvop_cfg_regdone(sysctrl, port);
 
 	clrsetbits_le32(&post->dsp_ctrl, M_POST_STANDBY, V_POST_STANDBY(0));
 }
-
 
  /**
  * rk_display_init() - Try to enable the given display device
@@ -268,6 +310,10 @@ static void rkvop_mode_set(struct udevice *dev,
 static int rk_display_init(struct udevice *dev, ulong fbbase, ofnode vp_node)
 {
 	struct video_priv *uc_priv = dev_get_uclass_priv(dev);
+        struct rkvop_driverdata *drvdata =
+		(struct rkvop_driverdata *)dev_get_driver_data(dev);
+        struct rkvop_platdata *platdata =
+		(struct rkvop_platdata *)drvdata->platdata;
 	ofnode ep_node;
 	int vop_id, port_id;
 	struct display_timing timing;
@@ -454,9 +500,9 @@ static int rk_display_init(struct udevice *dev, ulong fbbase, ofnode vp_node)
 		l2bpp = VIDEO_BPP16;
 	}
 
-	rkvop_mode_set(dev, &timing, vop_id, port_id);
+	rkvop_enable(dev, fbbase, 1 << l2bpp, &timing, port_id, platdata);
 
-	rkvop_enable(dev, fbbase, 1 << l2bpp, &timing, port_id);
+	rkvop_mode_set(dev, &timing, vop_id, port_id, platdata);
 
 	if (bridge) {
 		/* Attach the DSI controller and the display to the bridge. */
@@ -474,6 +520,8 @@ static int rk_display_init(struct udevice *dev, ulong fbbase, ofnode vp_node)
 	uc_priv->xsize = timing.hactive.typ;
 	uc_priv->ysize = timing.vactive.typ;
 	uc_priv->bpix = l2bpp;
+
+	uc_priv->rot = 1;
 	debug("fb=%lx, size=%d %d\n", fbbase, uc_priv->xsize, uc_priv->ysize);
 
 	return 0;
