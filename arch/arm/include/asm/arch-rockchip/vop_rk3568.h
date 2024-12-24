@@ -125,6 +125,8 @@ enum rockchip_fb_data_format_t {
 enum vop_modes {
 	VOP_MODE_MIPI = 0,
 	VOP_MODE_HDMI,
+	VOP_MODE_LVDS,
+	VOP_MODE_EDP
 };
 
 /* OFFSETS */
@@ -191,12 +193,18 @@ enum vop_modes {
 #define V_VP0_OVERLAY_MODE(x) (((x) & 1) << 0)
 
 /* VOP_LAYER_SEL */
-#define M_LAYER0_SEL (7 << 0)
 #define V_LAYER0_SEL(x) (((x) & 7) << 0)
+#define V_LAYER1_SEL(x) (((x) & 7) << 4)
+#define V_LAYER2_SEL(x) (((x) & 7) << 8)
+#define V_LAYER3_SEL(x) (((x) & 7) << 12)
+#define V_LAYER4_SEL(x) (((x) & 7) << 16)
+#define V_LAYER5_SEL(x) (((x) & 7) << 20)
 
 /* VOP_PORT_SEL */
-#define M_ESMART0_SEL_PORT (3 << 24)
 #define V_ESMART0_SEL_PORT(x) (((x) & 3) << 24)
+#define V_PORT0_MUX (((x) & 0xf) << 0)
+#define V_PORT1_MUX (((x) & 0xf) << 4)
+#define V_PORT2_MUX (((x) & 0xf) << 8)
 
 /* VOP_DSP_BG */
 #define M_DSP_BG_RED     (0x3f << 20)
@@ -230,11 +238,14 @@ enum vop_modes {
 #define V_POST_COLORBAR_EN(x) (((x) & 1) << 0)
 
 /* ESMART */
+#define M_ESMART_REGION0_MST_EN (1 << 0)
+#define V_ESMART_REGION0_DATA_FMT(x)        (((x) & 0x16) << 1)
+
 /* VOP2_ESMART_REGION0_VIR */
-#define V_ARGB888_VIRWIDTH(x)	(((x) & 0x3fff) << 0)
-#define V_RGB888_VIRWIDTH(x)	(((((x * 3) >> 2)+((x) % 3)) & 0x3fff) << 0)
-#define V_RGB565_VIRWIDTH(x)	(((x / 2) & 0x3fff) << 0)
-#define YUV_VIRWIDTH(x)		(((x / 4) & 0x3fff) << 0)
+#define V_ARGB888_VIRWIDTH(x)	(((x) & 0xffff) << 0)
+#define V_RGB888_VIRWIDTH(x)	(((((x * 3) >> 2)+((x) % 3)) & 0xffff) << 0)
+#define V_RGB565_VIRWIDTH(x)	(((x / 2) & 0xffff) << 0)
+#define YUV_VIRWIDTH(x)		(((x / 4) & 0xffff) << 0)
 
 #define V_ACT_HEIGHT(x)         (((x) & 0x1fff) << 16)
 #define V_ACT_WIDTH(x)          ((x) & 0x1fff)
