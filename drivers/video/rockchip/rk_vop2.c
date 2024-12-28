@@ -316,15 +316,19 @@ static int rk_display_init(struct udevice *dev, ulong fbbase, ofnode vp_node)
 	 *
 	 * For now, this will be the display of the PineTab2.
 	 */
-	ret = clk_set_rate(&dclk, 73500000);
-	if (ret < 0)
-		return ret;
+	if (1 == port_id) {
+		ret = clk_set_rate(&dclk, 73500000);
+		if (ret < 0)
+			return ret;
+	}
 
 	ret = clk_enable(&dclk);
 	if (ret < 0) {
 		printf("Failed to enable %s\n", dclk_name);
 		return ret;
 	}
+
+	printf("%s rate: %lu\n", dclk_name, clk_get_rate(&dclk));
 
 	/*
 	 * The remote-endpoint references into a subnode of the encoder
@@ -505,6 +509,9 @@ int rk_vop2_probe(struct udevice *dev)
 			break;
 	}
 	video_set_flush_dcache(dev, 1);
+
+	/* HACK: Configure dclk_vop1 dividers as it's broken. Fix needed. */
+	writel(0xffff0405, 0xfdd201a0);
 
 	return ret;
 }
