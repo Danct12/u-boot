@@ -1,7 +1,10 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (c) 2015 Google, Inc
- * Copyright 2014 Rockchip Inc.
+ * Copyright (c) 2024 Dang Huynh <danct12@riseup.net>
+ *
+ * Based on vop_rk3288.h:
+ *   Copyright (c) 2015 Google, Inc
+ *   Copyright 2014 Rockchip Inc.
  */
 
 #ifndef _ASM_ARCH_VOP_RK3568_H
@@ -123,10 +126,11 @@ enum rockchip_fb_data_format_t {
 };
 
 enum vop_modes {
-	VOP_MODE_MIPI = 0,
+	VOP_MODE_EDP = 0,
+	VOP_MODE_MIPI,
 	VOP_MODE_HDMI,
 	VOP_MODE_LVDS,
-	VOP_MODE_EDP
+	VOP_MODE_DP,
 };
 
 /* OFFSETS */
@@ -137,76 +141,72 @@ enum vop_modes {
 #define VOP2_ESMART_OFFSET(n) 0x1800 + (n * 0x200)
 
 /* System Registers */
-/* VOP_REG_CFG_DONE */
+/* REG_CFG_DONE */
 #define M_GLOBAL_REGDONE (1 << 15)
-#define M_LOAD_ESMART1 (1 << 11)
-#define M_LOAD_ESMART0 (1 << 10)
-#define M_LOAD_GLOBAL1 (1 << 1)
-#define M_LOAD_GLOBAL0 (1 << 0)
+#define M_LOAD_GLOBAL(x) (1 << (x & 3))
 
 #define V_GLOBAL_REGDONE(x) (((x) & 1) << 15)
-#define V_LOAD_ESMART1(x) (((x) & 1) << 11)
-#define V_LOAD_ESMART0(x) (((x) & 1) << 10)
-#define V_LOAD_GLOBAL1(x) (((x) & 1) << 1)
-#define V_LOAD_GLOBAL0(x) (((x) & 1) << 0)
+#define V_LOAD_GLOBAL(x,y) (((y) & 1) << (x & 3))
 
-/* VOP_VERSION_INFO */
+/* VERSION_INFO */
 #define M_FPGA_VERSION  (0xffff << 16)
 #define M_RTL_VERSION (0xffff)
 
-/* VOP_AUTO_GATING_CTRL */
+/* AUTO_GATING_CTRL */
 #define M_AUTO_GATING (1 << 31)
-#define M_PWMCLK_ACLK (1 << 12)
-#define M_OVERLAY_ACLK (1 << 8)
-#define M_SMART1_ACLK (1 << 7)
-#define M_SMART0_ACLK (1 << 6)
-#define M_ESMART1_ACLK (1 << 5)
-#define M_ESMART0_ACLK (1 << 4)
-
 #define V_AUTO_GATING(x) (((x) & 1) << 31)
-#define V_PWMCLK_ACLK(x) (((x) & 1) << 12)
-#define V_OVERLAY_ACLK(x) (((x) & 1) << 8)
-#define V_SMART1_ACLK(x) (((x) & 1) << 7)
-#define V_SMART0_ACLK(x) (((x) & 1) << 6)
-#define V_ESMART1_ACLK(x) (((x) & 1) << 5)
-#define V_ESMART0_ACLK(x) (((x) & 1) << 4)
 
-/* VOP_DSP_INFACE_POL */
+/* DSP_INFACE_POL */
 #define M_DSP_INFACE_REGDONE (1 << 28)
 #define V_DSP_INFACE_REGDONE(x) (((x) & 1) << 28)
 
-/* VOP_OTP_WIN_EN */
+/* OTP_WIN_EN */
 #define M_OTP_WIN (1 << 0)
 #define V_OTP_WIN(x) (((x) & 1) << 0)
 
-/* VOP_OVERLAY_CTRL */
+/* Overlay */
+/* OVERLAY_CTRL */
 #define M_LAYER_SEL_REGDONE_SEL (3 << 30)
 #define M_LAYER_SEL_REGDONE_EN (1 << 28)
-#define M_VP2_OVERLAY_MODE (1 << 2)
-#define M_VP1_OVERLAY_MODE (1 << 1)
-#define M_VP0_OVERLAY_MODE (1 << 0)
+#define M_VP_OVERLAY_MODE(vp) (1 << ((vp) & 3))
 
 #define V_LAYER_SEL_REGDONE_SEL(x) (((x) & 3) << 30)
 #define V_LAYER_SEL_REGDONE_EN(x) (((x) & 1) << 28)
-#define V_VP2_OVERLAY_MODE(x) (((x) & 1) << 2)
-#define V_VP1_OVERLAY_MODE(x) (((x) & 1) << 1)
-#define V_VP0_OVERLAY_MODE(x) (((x) & 1) << 0)
+#define V_VP_OVERLAY_MODE(x,vp) (((x) & 1) << ((vp) & 3))
 
-/* VOP_LAYER_SEL */
-#define V_LAYER0_SEL(x) (((x) & 7) << 0)
-#define V_LAYER1_SEL(x) (((x) & 7) << 4)
-#define V_LAYER2_SEL(x) (((x) & 7) << 8)
-#define V_LAYER3_SEL(x) (((x) & 7) << 12)
-#define V_LAYER4_SEL(x) (((x) & 7) << 16)
-#define V_LAYER5_SEL(x) (((x) & 7) << 20)
+/* LAYER_SEL */
+#define V_LAYER_SEL(x,port) (((port) & 7) << 4 * ((x) & 7))
 
-/* VOP_PORT_SEL */
-#define V_ESMART0_SEL_PORT(x) (((x) & 3) << 24)
-#define V_PORT0_MUX (((x) & 0xf) << 0)
-#define V_PORT1_MUX (((x) & 0xf) << 4)
-#define V_PORT2_MUX (((x) & 0xf) << 8)
+/* PORT_SEL */
+#define V_ESMART_SEL_PORT(x,vp) (((vp) & 3) << (24 + (2 * (x & 3))))
+#define V_PORT_MUX(x,vp) (((x) & 0xf) << 4 * ((vp) & 3))
 
-/* VOP_DSP_BG */
+/* Post processing */
+/* DSP_CTRL */
+#define M_POST_STANDBY (1 << 31)
+#define M_POST_FP_STANDBY (1 << 30)
+#define M_POST_BLACK (1 << 27)
+#define M_POST_OUT_ZERO (1 << 26)
+#define M_POST_LB_MODE (1 << 23)
+#define M_PRE_DITHER_DOWN (1 << 16)
+#define M_DSP_OUT_MODE (0xf)
+
+#define V_POST_STANDBY(x) (((x) & 1) << 31)
+#define V_POST_FP_STANDBY(x) (((x) & 1) << 30)
+#define V_POST_BLACK(x) (((x) & 1) << 27)
+#define V_POST_OUT_ZERO(x) (((x) & 1) << 26)
+#define V_POST_LB_MODE(x) (((x) & 1) << 23)
+#define V_PRE_DITHER_DOWN(x) (((x) & 1) << 16)
+#define V_DSP_OUT_MODE(x) ((x) & 0xf)
+
+/* COLOR_CTRL */
+#define M_POST_COLORBAR_MODE (1 << 1)
+#define M_POST_COLORBAR_EN (1 << 0)
+
+#define V_POST_COLORBAR_MODE(x) (((x) & 1) << 1)
+#define V_POST_COLORBAR_EN(x) (((x) & 1) << 0)
+
+/* DSP_BG */
 #define M_DSP_BG_RED     (0x3f << 20)
 #define M_DSP_BG_GREEN   (0x3f << 10)
 #define M_DSP_BG_BLUE    (0x3f << 0)
@@ -214,28 +214,6 @@ enum vop_modes {
 #define V_DSP_BG_RED(x)     (((x) & 0x3f) << 20)
 #define V_DSP_BG_GREEN(x)   (((x) & 0x3f) << 10)
 #define V_DSP_BG_BLUE(x)    (((x) & 0x3f) << 0)
-
-
-/* VOP_POST */
-#define M_POST_STANDBY (1 << 31)
-#define M_POST_FP_STANDBY (1 << 30)
-#define M_POST_BLACK (1 << 27)
-#define M_POST_OUT_ZERO (1 << 26)
-
-#define V_POST_STANDBY(x) (((x) & 1) << 31)
-#define V_POST_FP_STANDBY(x) (((x) & 1) << 30)
-#define V_POST_BLACK(x) (((x) & 1) << 27)
-#define V_POST_OUT_ZERO(x) (((x) & 1) << 26)
-
-/* DSP CTRL */
-#define M_DSP_OUT_MODE              (0xf)
-#define V_DSP_OUT_MODE(x)              ((x) & 0xf)
-
-/* VOP_COLOR_BAR */
-#define M_POST_COLORBAR_MODE (1 << 1)
-#define M_POST_COLORBAR_EN (1 << 0)
-#define V_POST_COLORBAR_MODE(x) (((x) & 1) << 1)
-#define V_POST_COLORBAR_EN(x) (((x) & 1) << 0)
 
 /* ESMART */
 #define M_ESMART_REGION0_MST_EN (1 << 0)

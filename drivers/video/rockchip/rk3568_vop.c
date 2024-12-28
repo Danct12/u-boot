@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (c) 2017 Theobroma Systems Design und Consulting GmbH
- * Copyright (c) 2015 Google, Inc
- * Copyright 2014 Rockchip Inc.
+ * Copyright (c) 2024 Dang Huynh <danct12@riseup.net>
+ *
+ * Based on rk3399_vop.c:
+ *   Copyright (c) 2017 Theobroma Systems Design und Consulting GmbH
+ *   Copyright (c) 2015 Google, Inc
+ *   Copyright 2014 Rockchip Inc.
  */
 
-#define DEBUG
-
+#include <clk.h>
 #include <display.h>
 #include <dm.h>
 #include <log.h>
@@ -108,11 +110,47 @@ static void rk3568_set_pin_polarity(struct udevice *dev,
 	writel(reg, &sysctrl->dsp_pol); 
 }
 
+static int rkvop_initialize(struct udevice *dev)
+{
+	struct rk_vop2_priv *priv = dev_get_priv(dev);
+	struct rk3568_vop_sysctrl *sysctrl = priv->regs + VOP2_SYSREG_OFFSET;
+	struct clk aclk;
+	int ret;
+
+	ret = clk_get_by_name(dev, "aclk", &aclk);
+	if (ret < 0)
+		return ret;
+
+	ret = clk_enable(&aclk);
+	if (ret < 0) {
+		printf("Failed to enable aclk\n");
+		return ret;
+	}
+
+	debug("aclk rate: %ld\n", clk_get_rate(&aclk));
+
+	/* Enable OTP function */
+	clrsetbits_le32(&sysctrl->otp_win, M_OTP_WIN, V_OTP_WIN(1));
+
+	writel(M_GLOBAL_REGDONE, &sysctrl->reg_cfg_done);
+
+	/* Disable auto gating */
+	clrsetbits_le32(&sysctrl->autogating_ctrl, M_AUTO_GATING, V_AUTO_GATING(0));
+
+	return 0;
+}
+
 static int rk3568_vop_probe(struct udevice *dev)
 {
+	int ret;
+
 	/* Before relocation we don't need to do anything */
 	if (!(gd->flags & GD_FLG_RELOC))
 		return 0;
+
+	ret = rkvop_initialize(dev);
+	if (ret)
+		return ret;
 
 	return rk_vop2_probe(dev);
 }

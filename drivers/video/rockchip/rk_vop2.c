@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (c) 2015 Google, Inc
- * Copyright 2014 Rockchip Inc.
+ * Copyright (c) 2024 Dang Huynh <danct12@riseup.net>
+ *
+ * Based on rk_vop.c:
+ *   Copyright (c) 2015 Google, Inc
+ *   Copyright 2014 Rockchip Inc.
  */
-#define DEBUG
 
 #include <clk.h>
 #include <display.h>
@@ -51,7 +53,7 @@ static void rkvop_cfg_regdone(struct rk3568_vop_sysctrl *sysctrl, int port)
 	 * For RK3588, changes will only take effect when you leftshift
 	 * the same bit by 16.
 	 */
-	reg |= (1 << port) | (1 << port) << 16;
+	reg |= M_LOAD_GLOBAL(port) | M_LOAD_GLOBAL(port) << 16;
 
 	writel(reg, &sysctrl->reg_cfg_done);
 }
@@ -62,7 +64,6 @@ static void rkvop_enable(struct udevice *dev, ulong fbbase,
 			 struct rkvop_platdata *platdata)
 {
 	struct rk_vop2_priv *priv = dev_get_priv(dev);
-	struct rk3568_vop_sysctrl *sysctrl = priv->regs + VOP2_SYSREG_OFFSET;
 	struct rk3568_vop_overlay *overlay = priv->regs + VOP2_OVERLAY_OFFSET;
 	struct rk3568_vop_esmart *esmart = priv->regs + VOP2_ESMART_OFFSET(0);
 	u32 reg;
@@ -72,19 +73,11 @@ static void rkvop_enable(struct udevice *dev, ulong fbbase,
 
 	debug("(%s, %s): esmart addr: 0x%p\n", dev_read_name(dev), __func__, esmart);
 
-	writel(0x4, &esmart->esmart_ctrl0);
-
 	writel(V_ACT_WIDTH(hactive - 1) | V_ACT_HEIGHT(vactive - 1),
 	       &esmart->esmart_region0_act_info);
 
-#if 0
-	writel(V_DSP_XST(edid->hsync_len.typ + edid->hback_porch.typ) |
-	       V_DSP_YST(edid->vsync_len.typ + edid->vback_porch.typ),
-	       &esmart->esmart_region0_dsp_offset);
-#else
-	/* TODO: Not actually needed? */
+	/* Set offset to 0,0 */
 	writel(0, &esmart->esmart_region0_dsp_offset);
-#endif
 
 	writel(V_DSP_WIDTH(hactive - 1) |
 		V_DSP_HEIGHT(vactive - 1),
@@ -111,39 +104,27 @@ static void rkvop_enable(struct udevice *dev, ulong fbbase,
 	writel(V_ESMART_REGION0_DATA_FMT(rgb_mode) | M_ESMART_REGION0_MST_EN,
 		&esmart->esmart_region0_mst_ctl);
 
-#if 1
 	reg = readl(&overlay->overlay_ctrl) | M_LAYER_SEL_REGDONE_EN;
 	writel(reg, &overlay->overlay_ctrl);
 
-	/* TODO: RK3568-specific layers, we can move this to it's own platdata */
-	writel(0x54552210, &overlay->layer_sel);
+	/* Set layer 0 to esmart0 */
+	writel(V_LAYER_SEL(0, 2), &overlay->layer_sel);
 
-	/* TODO: Investigate how port_sel works. I still know nothing. */
-	writel(0x85000852, &overlay->port_sel);
+	/* Set esmart to the destination video port */
+	reg = V_ESMART_SEL_PORT(0, port);
 
-/*	reg = readl(&overlay->port_sel);
-	reg |= V_ESMART0_SEL_PORT(port) | (0x2 << 0) | (0x5 << 4) | (0x8 << 8);
+	/*
+	 * VOP2 requires every port mux to be configured.
+	 *
+	 * As U-Boot only supports singledisplay, we'll set all
+	 * unused ports to set layer to 8 (disabled).
+	 */
+	for (int i = 0; i < 4; i++) {
+		if (i != port)
+			reg |= V_PORT_MUX(8, i);
+	}
+
 	writel(reg, &overlay->port_sel);
-*/
-
-#if 0
-	writel(0x26000000, &overlay->overlay_ctrl + 0xE0);
-	writel(0x28000000, &overlay->overlay_ctrl + 0xE4);
-	writel(0x28000000, &overlay->overlay_ctrl + 0xE8);
-	writel(0x14140014, &overlay->overlay_ctrl + 0xF8);
-#endif
-
-#else
-	writel(0x10000000, &overlay->overlay_ctrl);
-	writel(0x54552210, &overlay->layer_sel);
-	writel(0x85000852, &overlay->port_sel);
-
-
-	writel(0x26000000, &overlay->overlay_ctrl + 0xE0);
-	writel(0x28000000, &overlay->overlay_ctrl + 0xE4);
-	writel(0x28000000, &overlay->overlay_ctrl + 0xE8);
-	writel(0x14140014, &overlay->overlay_ctrl + 0xF8);
-#endif
 }
 
 static void rkvop_set_pin_polarity(struct udevice *dev,
@@ -154,48 +135,6 @@ static void rkvop_set_pin_polarity(struct udevice *dev,
 
         if (ops->set_pin_polarity)
                 ops->set_pin_polarity(dev, mode, polarity);
-}
-
-static int rkvop_initialize(struct udevice *dev, struct rk_vop2_priv *priv)
-{
-	struct rk3568_vop_sysctrl *sysctrl = priv->regs + VOP2_SYSREG_OFFSET;
-	struct clk hclk, aclk;
-	int ret = 0;
-
-	debug("(%s: %s): version info: 0x%x\n", __func__,
-	      dev_read_name(dev), readl(&sysctrl->version_info));
-
-	ret = clk_get_by_name(dev, "hclk", &hclk);
-	if (ret < 0)
-		return ret;
-
-	ret = clk_get_by_name(dev, "aclk", &aclk);
-	if (ret < 0)
-		return ret;
-
-/*
-	ret = clk_enable(&hclk);
-	if (ret < 0) {
-		printf("Failed to enable hclk\n");
-		return ret;
-	}
-*/
-
-	ret = clk_enable(&aclk);
-	if (ret < 0) {
-		printf("Failed to enable aclk\n");
-		return ret;
-	}
-
-	debug("aclk rate: %ld - hclk rate: %ld\n", clk_get_rate(&aclk), clk_get_rate(&hclk));
-
-	/* Enable OTP function */
-	clrsetbits_le32(&sysctrl->otp_win, M_OTP_WIN, V_OTP_WIN(1));
-
-	writel(M_GLOBAL_REGDONE, &sysctrl->reg_cfg_done);
-
-	clrsetbits_le32(&sysctrl->autogating_ctrl, M_AUTO_GATING, V_AUTO_GATING(0));
-	return 0; 
 }
 
 static void rkvop_enable_output(struct udevice *dev, enum vop_modes mode, u32 port)
@@ -230,6 +169,7 @@ static void rkvop_mode_set(struct udevice *dev,
 	u32 vfront_porch = edid->vfront_porch.typ;
 	int mode_flags;
 	u32 pin_polarity;
+	u32 reg;
 
 	pin_polarity = BIT(DCLK_INVERT);
 	if (edid->flags & DISPLAY_FLAGS_HSYNC_HIGH)
@@ -245,9 +185,17 @@ static void rkvop_mode_set(struct udevice *dev,
 	    (mode == VOP_MODE_HDMI))
 		mode_flags = 15;  /* RGBaaa */
 
-	printf("bg_dly: %d\n", platdata->bg_dly[port]);
+	reg = V_DSP_OUT_MODE(mode_flags);
 
-	/* TODO: What is prescan timings? */
+	if (mode_flags < 15)
+		reg |= M_PRE_DITHER_DOWN;
+
+	if (hactive <= 2048)
+		reg |= M_POST_LB_MODE;
+
+	printf("(%s, %s): bg_dly: %d\n",
+		dev_read_name(dev), __func__, platdata->bg_dly[port]);
+
 	writel(((platdata->bg_dly[port] + (hactive >> 1) - 1) << 16) | hsync_len, &post->prescan_htimings);
 
 	writel(V_HSYNC(hsync_len) |
@@ -274,18 +222,16 @@ static void rkvop_mode_set(struct udevice *dev,
 	       V_VASP(vsync_len + vback_porch),
 	       &post->dsp_vact_info);
 
-	/* We don't need to scale. */
+	/* No scaling */
 	writel(0x10001000, &post->scl_factor_yrgb);
 
 	/* COLOR BARS TEST */
 	//clrsetbits_le32(&post->color_ctrl, M_POST_COLORBAR_EN,
 	//		V_POST_COLORBAR_EN(1));
 
-	writel(V_DSP_OUT_MODE(mode_flags), &post->dsp_ctrl);
+	writel(reg, &post->dsp_ctrl);
 
 	rkvop_cfg_regdone(sysctrl, port);
-
-	clrsetbits_le32(&post->dsp_ctrl, M_POST_STANDBY, V_POST_STANDBY(0));
 }
 
  /**
@@ -310,9 +256,9 @@ static void rkvop_mode_set(struct udevice *dev,
 static int rk_display_init(struct udevice *dev, ulong fbbase, ofnode vp_node)
 {
 	struct video_priv *uc_priv = dev_get_uclass_priv(dev);
-        struct rkvop_driverdata *drvdata =
+	struct rkvop_driverdata *drvdata =
 		(struct rkvop_driverdata *)dev_get_driver_data(dev);
-        struct rkvop_platdata *platdata =
+	struct rkvop_platdata *platdata =
 		(struct rkvop_platdata *)drvdata->platdata;
 	ofnode ep_node;
 	int vop_id, port_id;
@@ -406,11 +352,6 @@ static int rk_display_init(struct udevice *dev, ulong fbbase, ofnode vp_node)
 			      __func__, dev_read_name(dev));
 			return -EINVAL;
 		}
-
-		const char *yooocom;
-		yooocom = ofnode_get_property(remote, "compatible", NULL);
-		if (yooocom)
-			debug("%s(%s): compat: %s\n", __func__, dev_read_name(dev), yooocom);
 
 		uclass_find_device_by_ofnode(UCLASS_VIDEO_BRIDGE, remote, &bridge);
 
@@ -546,16 +487,7 @@ int rk_vop2_probe(struct udevice *dev)
 
 	priv->regs = dev_read_addr_ptr(dev);
 
-	ret = rkvop_initialize(dev, priv);
-	if (ret) {
-		debug("Failed to initialize VOP\n");
-		return -EINVAL;
-	}
-
-	/*
-	 * Try all the ports until we find one that works. In practice this
-	 * tries EDP first if available, then HDMI.
-	 */
+	/* Try all the ports until we find one that works. */
 	port = dev_read_subnode(dev, "ports");
 	if (!ofnode_valid(port)) {
 		debug("%s(%s): 'port' subnode not found\n",
