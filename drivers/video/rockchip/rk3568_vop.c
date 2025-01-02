@@ -21,21 +21,29 @@
 
 DECLARE_GLOBAL_DATA_PTR;
 
+#define M_MIPI1_INFACE_MUX (3 << 21)
+#define M_LVDS_INFACE_MUX (3 << 18)
 #define M_MIPI_INFACE_MUX (3 << 16)
+#define M_EDP_INFACE_MUX (3 << 14)
 #define M_HDMI_INFACE_MUX (3 << 10)
+#define M_RGB_INFACE_MUX (3 << 8)
 
+#define V_MIPI1_INFACE_MUX(x) (((x) & 3) << 21)
+#define V_LVDS_INFACE_MUX(x) (((x) & 3) << 18)
 #define V_MIPI_INFACE_MUX(x) (((x) & 3) << 16)
+#define V_EDP_INFACE_MUX(x) (((x) & 3) << 14)
 #define V_HDMI_INFACE_MUX(x) (((x) & 3) << 10)
+#define V_RGB_INFACE_MUX(x) (((x) & 3) << 8)
 
 #define M_MIPI_POL (0xf << 16)
 #define M_EDP_POL (0xf << 12)
 #define M_HDMI_POL (0xf << 4)
-#define M_LVDS_POL (0xf << 0)
+#define M_RGB_LVDS_POL (0xf << 0)
 
 #define V_MIPI_POL(x) (((x) & 0xf) << 16)
 #define V_EDP_POL(x) (((x) & 0xf) << 12)
 #define V_HDMI_POL(x) (((x) & 0xf) << 4)
-#define V_LVDS_POL(x) (((x) & 0xf) << 0)
+#define V_RGB_LVDS_POL(x) (((x) & 0xf) << 0)
 
 #define M_MIPI1_OUT_EN (1 << 20)
 #define M_BT656_OUT_EN (1 << 7)
@@ -66,12 +74,20 @@ static void rk3568_enable_output(struct udevice *dev,
 	u32 reg;
 
 	switch (mode) {
+	case VOP_MODE_EDP:
+		reg |= M_EDP_OUT_EN | V_EDP_INFACE_MUX(port);
+		break;
+
 	case VOP_MODE_HDMI:
 		reg |= M_HDMI_OUT_EN | V_HDMI_INFACE_MUX(port);
 		break;
 
 	case VOP_MODE_MIPI:
 		reg |= M_MIPI_OUT_EN | V_MIPI_INFACE_MUX(port);
+		break;
+
+	case VOP_MODE_LVDS:
+		reg |= M_LVDS_OUT_EN | V_LVDS_INFACE_MUX(port);
 		break;
 
 	default:
@@ -93,12 +109,21 @@ static void rk3568_set_pin_polarity(struct udevice *dev,
 	reg = M_DSP_INFACE_REGDONE;
 
 	switch (mode) {
+	case VOP_MODE_EDP:
+		reg |= V_EDP_POL(polarity);
+		break;
+
 	case VOP_MODE_HDMI:
 		reg |= V_HDMI_POL(polarity);
 		break;
 
 	case VOP_MODE_MIPI:
 		reg |= V_MIPI_POL(polarity);
+		break;
+
+	/* RGB and LVDS shares the same polarity */
+	case VOP_MODE_LVDS:
+		reg |= V_RGB_LVDS_POL(polarity);
 		break;
 
 	default:
