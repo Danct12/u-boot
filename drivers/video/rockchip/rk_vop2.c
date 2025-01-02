@@ -308,34 +308,6 @@ static int rk_display_init(struct udevice *dev, ulong fbbase, ofnode vp_node)
 	if (!ofnode_valid(remote))
 		return -EINVAL;
 
-	/* enable port clk */
-	snprintf(dclk_name, sizeof(dclk_name), "dclk_vp%d", port_id);
-	ret = clk_get_by_name(dev, dclk_name, &dclk);
-	if (ret < 0)
-		return ret;
-
-#if 0
-	/*
-	 * HACK: VOP2 doesn't seem to like it when we probe the bridge controller
-	 * and set clk..
-	 *
-	 * For now, this will be the display of the PineTab2.
-	 */
-	if (1 == port_id) {
-		ret = clk_set_rate(&dclk, 73500000);
-		if (ret < 0)
-			return ret;
-	}
-#endif
-
-	ret = clk_enable(&dclk);
-	if (ret < 0) {
-		printf("Failed to enable %s\n", dclk_name);
-		return ret;
-	}
-
-	printf("%s rate: %lu\n", dclk_name, clk_get_rate(&dclk));
-
 	/*
 	 * The remote-endpoint references into a subnode of the encoder
 	 * (i.e. HDMI, MIPI, etc.) with the DTS looking something like
@@ -392,6 +364,20 @@ static int rk_display_init(struct udevice *dev, ulong fbbase, ofnode vp_node)
 	}
 	debug("vop_id=%d\n", vop_id);
 	debug("port=%d\n", port_id);
+
+	/* enable port clk */
+	snprintf(dclk_name, sizeof(dclk_name), "dclk_vp%d", port_id);
+	ret = clk_get_by_name(dev, dclk_name, &dclk);
+	if (ret < 0)
+		return ret;
+
+	ret = clk_enable(&dclk);
+	if (ret < 0) {
+		printf("Failed to enable %s\n", dclk_name);
+		return ret;
+	}
+
+	printf("%s rate: %lu\n", dclk_name, clk_get_rate(&dclk));
 
 	if (bridge) {
 		/* video bridge detected, probe it */
