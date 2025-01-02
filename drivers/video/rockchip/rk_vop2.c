@@ -190,6 +190,10 @@ static void rkvop_mode_set(struct udevice *dev,
 	if (mode_flags < 15)
 		reg |= M_PRE_DITHER_DOWN;
 
+	/*
+	 * 0b0: 4x4096 (if act_width > 2048)
+	 * 0b1: 8x2048
+	 */
 	if (hactive <= 2048)
 		reg |= M_POST_LB_MODE;
 
@@ -310,6 +314,7 @@ static int rk_display_init(struct udevice *dev, ulong fbbase, ofnode vp_node)
 	if (ret < 0)
 		return ret;
 
+#if 0
 	/*
 	 * HACK: VOP2 doesn't seem to like it when we probe the bridge controller
 	 * and set clk..
@@ -321,6 +326,7 @@ static int rk_display_init(struct udevice *dev, ulong fbbase, ofnode vp_node)
 		if (ret < 0)
 			return ret;
 	}
+#endif
 
 	ret = clk_enable(&dclk);
 	if (ret < 0) {
@@ -369,10 +375,16 @@ static int rk_display_init(struct udevice *dev, ulong fbbase, ofnode vp_node)
 		      __func__, dev_read_name(dev));
 		return -EINVAL;
 	}
-	if (strstr(compat, "mipi")) {
+	if (strstr(compat, "edp")) {
+		vop_id = VOP_MODE_EDP;
+	} else if (strstr(compat, "mipi")) {
 		vop_id = VOP_MODE_MIPI;
 	} else if (strstr(compat, "hdmi")) {
 		vop_id = VOP_MODE_HDMI;
+	} else if (strstr(compat, "rk3588-dp")) {
+		vop_id = VOP_MODE_DP;
+	} else if (strstr(compat, "lvds")) {
+		vop_id = VOP_MODE_LVDS;
 	} else {
 		debug("%s(%s): Failed to find vop mode for %s\n",
 		      __func__, dev_read_name(dev), compat);
@@ -433,6 +445,13 @@ static int rk_display_init(struct udevice *dev, ulong fbbase, ofnode vp_node)
 			debug("%s: Failed to read timings\n", __func__);
 			return ret;
 		}
+	}
+
+	/* Set clock rate on video port to display timings */
+	ret = clk_set_rate(&dclk, timing.pixelclock.typ);
+	if (ret < 0) {
+		printf("Failed to set clock rate: %d\n", ret);
+		return ret;
 	}
 
 	/* Set bitwidth for vop display according to vop mode */
@@ -509,9 +528,6 @@ int rk_vop2_probe(struct udevice *dev)
 			break;
 	}
 	video_set_flush_dcache(dev, 1);
-
-	/* HACK: Configure dclk_vop1 dividers as it's broken. Fix needed. */
-	writel(0xffff0405, 0xfdd201a0);
 
 	return ret;
 }
