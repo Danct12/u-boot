@@ -13,10 +13,12 @@
 #include <dm/device_compat.h>
 #include <edid.h>
 #include <log.h>
+#include <panel.h>
 #include <regmap.h>
 #include <reset.h>
 #include <syscon.h>
 #include <video.h>
+#include <video_bridge.h>
 #include <asm/global_data.h>
 #include <asm/gpio.h>
 #include <asm/io.h>
@@ -253,12 +255,14 @@ static int rk_display_init(struct udevice *dev, ulong fbbase, ofnode vp_node)
 	int vop_id, port_id;
 	struct display_timing timing;
 	struct udevice *disp;
+	struct udevice *bridge;
 	int ret;
 	u32 remote_phandle;
 	struct display_plat *disp_uc_plat;
 	enum video_log2_bpp l2bpp;
 	ofnode remote;
 	const char *compat;
+	struct udevice *panel;
 	char dclk_name[9];
 	struct clk dclk;
 
@@ -319,8 +323,10 @@ static int rk_display_init(struct udevice *dev, ulong fbbase, ofnode vp_node)
 			return -EINVAL;
 		}
 
+		uclass_find_device_by_ofnode(UCLASS_VIDEO_BRIDGE, remote, &bridge);
+
 		uclass_find_device_by_ofnode(UCLASS_DISPLAY, remote, &disp);
-		if (disp)
+		if (disp || bridge)
 			break;
 	};
 	compat = ofnode_get_property(remote, "compatible", NULL);
@@ -359,27 +365,57 @@ static int rk_display_init(struct udevice *dev, ulong fbbase, ofnode vp_node)
 		return ret;
 	}
 
-	disp_uc_plat = dev_get_uclass_plat(disp);
-	debug("Found device '%s', disp_uc_priv=%p\n", disp->name, disp_uc_plat);
-	if (display_in_use(disp)) {
-		debug("   - device in use\n");
-		return -EBUSY;
-	}
+	if (bridge) {
+		/* video bridge detected, probe it */
+		ret = device_probe(bridge);
+		if (ret) {
+			printf("%s: device '%s' bridge won't probe (ret=%d)\n",
+			       __func__, dev->name, ret);
+			return ret;
+		}
 
-	disp_uc_plat->source_id = vop_id;
-	disp_uc_plat->src_dev = dev;
+		/* Attach the DSI controller and the display to the bridge. */
+		ret = video_bridge_attach(bridge);
+		if (ret) {
+			printf("Failed to attach video bridge: %d\n", ret);
+			return ret;
+		}
 
-	ret = device_probe(disp);
-	if (ret) {
-		debug("%s: device '%s' display won't probe (ret=%d)\n",
-		      __func__, dev->name, ret);
-		return ret;
-	}
+		/* Get the panel device (TODO: fetch it from the bridge somehow) */
+		ret = uclass_first_device_err(UCLASS_PANEL, &panel);
+		if (ret) {
+			printf("Panel device error: %d\n", ret);
+			return ret;
+		}
 
-	ret = display_read_timing(disp, &timing);
-	if (ret) {
-		debug("%s: Failed to read timings\n", __func__);
-		return ret;
+		ret = panel_get_display_timing(panel, &timing);
+		if (ret) {
+			debug("%s: Failed to read timings\n", __func__);
+			return ret;
+		}
+	} else {
+		disp_uc_plat = dev_get_uclass_plat(disp);
+		debug("Found device '%s', disp_uc_priv=%p\n", disp->name, disp_uc_plat);
+		if (display_in_use(disp)) {
+			debug("   - device in use\n");
+			return -EBUSY;
+		}
+
+		disp_uc_plat->source_id = vop_id;
+		disp_uc_plat->src_dev = dev;
+
+		ret = device_probe(disp);
+		if (ret) {
+			debug("%s: device '%s' display won't probe (ret=%d)\n",
+			      __func__, dev->name, ret);
+			return ret;
+		}
+
+		ret = display_read_timing(disp, &timing);
+		if (ret) {
+			debug("%s: Failed to read timings\n", __func__);
+			return ret;
+		}
 	}
 
 	/* Set clock rate on video port to display timings */
@@ -409,9 +445,18 @@ static int rk_display_init(struct udevice *dev, ulong fbbase, ofnode vp_node)
 
 	rkvop_mode_set(dev, &timing, vop_id, port_id, platdata);
 
-	ret = display_enable(disp, 1 << l2bpp, &timing);
-	if (ret)
-		return ret;
+	if (bridge) {
+		/* Attach the DSI controller and the display to the bridge. */
+		ret = video_bridge_set_backlight(bridge, 60);
+		if (ret) {
+			printf("Failed to start the video bridge: %d\n", ret);
+			return ret;
+		}
+	} else {
+		ret = display_enable(disp, 1 << l2bpp, &timing);
+		if (ret)
+			return ret;
+	}
 
 	uc_priv->xsize = timing.hactive.typ;
 	uc_priv->ysize = timing.vactive.typ;
