@@ -531,6 +531,16 @@ config VIDEO_BCM2835
 	  that same resolution (or as near as possible) and 32bpp depth, so
 	  that U-Boot can access it with full colour depth.
 
+config VIDEO_LCD_BOE_TH101MB31IG002_28A
+	bool "BOE TH101MB31IG002-28A DSI LCD panel support"
+	depends on PANEL && BACKLIGHT
+	select VIDEO_MIPI_DSI
+	help
+	  Say Y here if you want to enable support for BOE TH101MB31IG002-28A
+	  panel.
+
+	  This panel has a 800x1280 resolution and uses 24 bit RGB per pixel.
+
 config VIDEO_LCD_ENDEAVORU
 	tristate "Endeavoru 720x1280 DSI video mode panel"
 	depends on PANEL && BACKLIGHT
